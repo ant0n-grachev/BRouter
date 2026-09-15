@@ -1,0 +1,33 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[[redirects]]
+  from = "/assets/*"
+  to = "/asset-not-found.txt"
+  status = 404
+
+[[redirects]]
+  from = "/icons/*"
+  to = "/asset-not-found.txt"
+  status = 404
+
+[[redirects]]
+  from = "/manifest.json"
+  to = "/asset-not-found.txt"
+  status = 404
+
+[[redirects]]
+  from = "/favicon.ico"
+  to = "/asset-not-found.txt"
+  status = 404
+
+[[redirects]]
+  from = "/sw.js"
+  to = "/asset-not-found.txt"
+  status = 404
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
