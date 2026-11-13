@@ -142,10 +142,13 @@ function replay(activeRoute: RoutedPath) {
     timestamp,
   });
   vi.mocked(fetchRoute).mockResolvedValue(activeRoute);
+  const initialProps: { position: LocationFix | null; selectedLeg: TripLeg } = {
+    position: fix(0, 0),
+    selectedLeg: currentLeg,
+  };
   const hook = renderHook(
-    ({ position, selectedLeg }: { position: LocationFix | null; selectedLeg: TripLeg }) =>
-      useRoutedNavigation(selectedLeg, position, true),
-    { initialProps: { position: fix(0, 0), selectedLeg: currentLeg } },
+    ({ position, selectedLeg }) => useRoutedNavigation(selectedLeg, position, true),
+    { initialProps },
   );
   return {
     ...hook,
