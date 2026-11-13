@@ -36,6 +36,10 @@ straight-line estimates. Time remaining is an estimate based on the provider's
 route duration and progress. Navigation uses recent accepted fixes to distinguish
 nearby route traversals and checks distance along the selected leg before
 announcing arrival. If the first fix is ambiguous, it favors the earlier traversal.
+A clear move back along the current segment can increase remaining distance. A
+short reversal near the turn of an exact retrace may be interpreted as following
+the return traversal of the same path because the location samples cannot distinguish the
+two movements there.
 
 The **Open BCycle app** button appears near the active station when a location
 fix is recent (at most 30 seconds old), accurate to 50 meters or better, and the

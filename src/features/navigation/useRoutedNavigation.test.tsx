@@ -304,3 +304,24 @@ it('follows both traversals of an exact retrace with five-meter fixes and ten-me
     expect(result.current.progress?.remainingDistanceMeters).toBeCloseTo(meters, 0);
   }
 });
+
+it('follows an exact retrace when accurate-enough fixes straddle the turn vertex', async () => {
+  const retraced = loopRoute(
+    [
+      [0, 0],
+      [100, 0],
+      [0, 0],
+    ],
+    200,
+  );
+  const run = replay(retraced);
+  await waitFor(() => expect(run.result.current.route).toBe(retraced));
+  for (const meters of [25, 50, 75, 90, 96, 98]) {
+    run.update(meters, 0, 10);
+    expect(run.remaining()).toBeCloseTo(200 - meters, 0);
+  }
+  for (const meters of [94, 89, 80, 50, 0]) {
+    run.update(meters, 0, 10);
+    expect(run.remaining()).toBeCloseTo(meters, 0);
+  }
+});

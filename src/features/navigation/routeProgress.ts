@@ -7,6 +7,7 @@ const MAX_AMBIGUITY_METERS = 15;
 const MIN_AMBIGUITY_METERS = 2;
 const SCORE_TIE_METERS = 0.5;
 const PROJECTION_EPSILON_METERS = 0.000_001;
+const PROGRESS_JUMP_WEIGHT = 0.15;
 
 export interface RouteProgress {
   distanceFromRouteMeters: number;
@@ -127,28 +128,40 @@ function projectOntoRoute(
 
     if (!previous) return projection;
     const delta = projection.distanceAlongRouteMeters - previous.distanceAlongRouteMeters;
-    const score = Math.abs(Math.abs(delta) - movement) + 0.15 * Math.abs(delta);
-    if (score < bestScore - SCORE_TIE_METERS) {
+    const score = Math.abs(Math.abs(delta) - movement) + PROGRESS_JUMP_WEIGHT * Math.abs(delta);
+    if (!best) {
       best = projection;
       bestScore = score;
-    } else if (best && Math.abs(score - bestScore) <= SCORE_TIE_METERS) {
-      const continuesAtTurn =
-        movement > SCORE_TIE_METERS &&
-        delta > 0 &&
-        best.distanceAlongRouteMeters < previous.distanceAlongRouteMeters &&
-        index > previous.geometryIndex &&
-        Math.abs(distances[index] - previous.distanceAlongRouteMeters) <= SCORE_TIE_METERS;
-      const closerToFix = distance < best.distanceFromRouteMeters - SCORE_TIE_METERS;
-      const staysOnTraversal =
-        Math.abs(distance - best.distanceFromRouteMeters) <= SCORE_TIE_METERS &&
-        index === previous.geometryIndex &&
-        best.geometryIndex !== previous.geometryIndex;
-      // When retraced geometry is indistinguishable, stay on the current traversal
-      // until a fix reaches the shared turn and movement resumes along the next one.
-      if (continuesAtTurn || closerToFix || staysOnTraversal) {
-        best = projection;
-        bestScore = score;
-      }
+      continue;
+    }
+
+    // A short reversal near a shared turn can be a missed sample at the vertex.
+    // Give the contiguous return traversal the GPS uncertainty of that one fix.
+    const turnGap = distances[index] - previous.distanceAlongRouteMeters;
+    const continuesAtTurn =
+      movement > SCORE_TIE_METERS &&
+      delta > 0 &&
+      best.geometryIndex === previous.geometryIndex &&
+      best.distanceAlongRouteMeters < previous.distanceAlongRouteMeters &&
+      index > previous.geometryIndex &&
+      turnGap >= -PROJECTION_EPSILON_METERS &&
+      turnGap <= tolerance &&
+      distances[previous.geometryIndex + 1] === distances[index] &&
+      distance <= best.distanceFromRouteMeters + SCORE_TIE_METERS &&
+      score <= bestScore + 2 * (1 + PROGRESS_JUMP_WEIGHT) * turnGap + SCORE_TIE_METERS;
+    const tied = Math.abs(score - bestScore) <= SCORE_TIE_METERS;
+    const closerToFix = distance < best.distanceFromRouteMeters - SCORE_TIE_METERS;
+    const staysOnTraversal =
+      Math.abs(distance - best.distanceFromRouteMeters) <= SCORE_TIE_METERS &&
+      index === previous.geometryIndex &&
+      best.geometryIndex !== previous.geometryIndex;
+    if (
+      score < bestScore - SCORE_TIE_METERS ||
+      continuesAtTurn ||
+      (tied && (closerToFix || staysOnTraversal))
+    ) {
+      best = projection;
+      bestScore = score;
     }
   }
 
