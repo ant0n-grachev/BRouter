@@ -3,6 +3,9 @@ import type { RouteInstruction, RoutedPath } from './routingTypes';
 
 const EARTH_RADIUS_METERS = 6_371_000;
 const INSTRUCTION_REACHED_TOLERANCE_METERS = 1;
+const MAX_AMBIGUITY_METERS = 15;
+const MIN_AMBIGUITY_METERS = 2;
+const SCORE_TIE_METERS = 0.5;
 
 export interface RouteProgress {
   distanceFromRouteMeters: number;
@@ -17,6 +20,12 @@ interface Projection {
   distanceFromRouteMeters: number;
   distanceAlongRouteMeters: number;
   geometryIndex: number;
+}
+
+export interface MatchedRoutePosition {
+  position: LatLon;
+  distanceAlongRouteMeters: number;
+  remainingGeometryMeters: number;
 }
 
 function toLocalMeters(point: LatLon, origin: LatLon, referenceLatitude: number) {
@@ -44,7 +53,13 @@ function cumulativeDistances(geometry: LatLon[]): number[] {
   return distances;
 }
 
-function projectOntoRoute(geometry: LatLon[], distances: number[], position: LatLon): Projection {
+function projectOntoRoute(
+  geometry: LatLon[],
+  distances: number[],
+  position: LatLon,
+  previous: MatchedRoutePosition | null,
+  accuracy: number,
+): Projection {
   if (geometry.length === 0) {
     return { distanceFromRouteMeters: 0, distanceAlongRouteMeters: 0, geometryIndex: 0 };
   }
@@ -57,7 +72,8 @@ function projectOntoRoute(geometry: LatLon[], distances: number[], position: Lat
     };
   }
 
-  let closest: Projection | null = null;
+  const projections: Projection[] = [];
+  let closestDistance = Number.POSITIVE_INFINITY;
 
   for (let index = 0; index < geometry.length - 1; index += 1) {
     const start = geometry[index];
@@ -86,12 +102,49 @@ function projectOntoRoute(geometry: LatLon[], distances: number[], position: Lat
       geometryIndex: index,
     };
 
-    if (!closest || projection.distanceFromRouteMeters < closest.distanceFromRouteMeters) {
-      closest = projection;
+    projections.push(projection);
+    closestDistance = Math.min(closestDistance, distanceFromRouteMeters);
+  }
+
+  const tolerance = Math.max(MIN_AMBIGUITY_METERS, Math.min(accuracy, MAX_AMBIGUITY_METERS));
+  const movement = previous ? distanceMeters(previous.position, position) : 0;
+  let best: Projection | undefined;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const [index, projection] of projections.entries()) {
+    const distance = projection.distanceFromRouteMeters;
+    if (distance > closestDistance + tolerance) continue;
+    // A local minimum represents a traversal, rather than a nearby segment endpoint.
+    if (
+      distance > (projections[index - 1]?.distanceFromRouteMeters ?? Infinity) ||
+      distance > (projections[index + 1]?.distanceFromRouteMeters ?? Infinity)
+    )
+      continue;
+
+    if (!previous) return projection;
+    const delta = projection.distanceAlongRouteMeters - previous.distanceAlongRouteMeters;
+    const score = Math.abs(Math.abs(delta) - movement) + 0.15 * Math.abs(delta);
+    if (score < bestScore - SCORE_TIE_METERS) {
+      best = projection;
+      bestScore = score;
+    } else if (best && Math.abs(score - bestScore) <= SCORE_TIE_METERS) {
+      // At an exact retrace, equally plausible motion continues into the next traversal.
+      // If two points share one vertex, keep the original segment index there.
+      if (
+        movement > tolerance &&
+        delta > 0 &&
+        best.distanceAlongRouteMeters < previous.distanceAlongRouteMeters
+      ) {
+        best = projection;
+        bestScore = score;
+      } else if (distance < best.distanceFromRouteMeters - SCORE_TIE_METERS) {
+        best = projection;
+        bestScore = score;
+      }
     }
   }
 
-  return closest!;
+  return best!;
 }
 
 function instructionDistance(instruction: RouteInstruction, cumulative: number[]): number {
@@ -105,11 +158,16 @@ function finiteNonNegative(value: number): number {
   return Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
-export function getRouteProgress(route: RoutedPath, position: LatLon | null): RouteProgress {
+export function matchRouteProgress(
+  route: RoutedPath,
+  position: LatLon | null,
+  previous: MatchedRoutePosition | null = null,
+  accuracy = MIN_AMBIGUITY_METERS,
+): { progress: RouteProgress; match: MatchedRoutePosition | null } {
   const cumulative = cumulativeDistances(route.geometry);
   const geometryDistance = cumulative.at(-1) ?? 0;
   const projection = position
-    ? projectOntoRoute(route.geometry, cumulative, position)
+    ? projectOntoRoute(route.geometry, cumulative, position, previous, accuracy)
     : { distanceFromRouteMeters: 0, distanceAlongRouteMeters: 0, geometryIndex: 0 };
   const progressFraction =
     geometryDistance > 0
@@ -122,7 +180,7 @@ export function getRouteProgress(route: RoutedPath, position: LatLon | null): Ro
         projection.distanceAlongRouteMeters - INSTRUCTION_REACHED_TOLERANCE_METERS,
     ) ?? null;
 
-  return {
+  const progress = {
     distanceFromRouteMeters: finiteNonNegative(projection.distanceFromRouteMeters),
     remainingDistanceMeters: finiteNonNegative(route.distanceMeters) * (1 - progressFraction),
     remainingDurationSeconds: finiteNonNegative(route.durationSeconds) * (1 - progressFraction),
@@ -135,4 +193,18 @@ export function getRouteProgress(route: RoutedPath, position: LatLon | null): Ro
       : 0,
     geometryIndex: projection.geometryIndex,
   };
+  return {
+    progress,
+    match: position
+      ? {
+          position,
+          distanceAlongRouteMeters: projection.distanceAlongRouteMeters,
+          remainingGeometryMeters: geometryDistance - projection.distanceAlongRouteMeters,
+        }
+      : null,
+  };
+}
+
+export function getRouteProgress(route: RoutedPath, position: LatLon | null): RouteProgress {
+  return matchRouteProgress(route, position).progress;
 }

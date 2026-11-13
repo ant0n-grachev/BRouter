@@ -16,9 +16,10 @@ vi.mock('./routingClient', () => ({
   }: {
     from: { lat: number; lon: number };
     to: { lat: number; lon: number };
-  }) =>
-    Promise.resolve({
-      geometry: [from, to],
+  }) => {
+    const geometry = routeGeometry ?? [from, to];
+    return Promise.resolve({
+      geometry,
       distanceMeters: 500,
       durationSeconds: 240,
       instructions: [
@@ -29,7 +30,8 @@ vi.mock('./routingClient', () => ({
           durationSeconds: 240,
         },
       ],
-    }),
+    });
+  },
 }));
 
 const pickup: Station = {
@@ -57,6 +59,7 @@ const alternative: Station = {
   lat: 43.074,
   lon: -89.401,
 };
+let routeGeometry: Array<{ lat: number; lon: number }> | undefined;
 const destination = { lat: 43.083, lon: -89.412, label: 'Memorial Union' };
 let reportLocation: PositionCallback;
 const watchPosition = vi.fn((success: PositionCallback) => {
@@ -115,6 +118,7 @@ function Harness({
 
 beforeEach(() => {
   watchPosition.mockClear();
+  routeGeometry = undefined;
   Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
   Object.defineProperty(navigator, 'geolocation', {
     configurable: true,
@@ -125,7 +129,7 @@ beforeEach(() => {
   });
 });
 
-function locate(station: Station) {
+function locate(station: { lat: number; lon: number }) {
   act(() =>
     reportLocation({
       coords: {
@@ -181,6 +185,22 @@ describe('guided navigation screen', () => {
     locate(pickup);
     await userEvent.click(await screen.findByRole('button', { name: 'Finish trip' }));
     expect(onExit).toHaveBeenCalledOnce();
+  });
+
+  it('does not announce arrival when the route passes the endpoint before a later traversal', async () => {
+    const start = { lat: 43.07, lon: -89.401 };
+    const bend = { lat: 43.074, lon: -89.401 };
+    routeGeometry = [start, pickup, bend, { lat: 43.074, lon: -89.4 }, pickup];
+    render(<Harness data={snapshot([pickup, dropoff, alternative])} />);
+    await waitFor(() => expect(watchPosition).toHaveBeenCalled());
+    locate(start);
+    await screen.findByText('Continue along the path.');
+    locate(pickup);
+    expect(screen.queryByText('You’ve arrived')).not.toBeInTheDocument();
+    locate(bend);
+    locate(routeGeometry[3]);
+    locate(pickup);
+    expect(await screen.findByText('You’ve arrived')).toBeVisible();
   });
 
   it('keeps giving directions when near the station but still a short walk away', async () => {

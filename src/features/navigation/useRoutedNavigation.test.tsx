@@ -103,3 +103,168 @@ it('replaces a planned-origin route once when the first GPS fix is somewhere els
   });
   expect(fetchRoute).toHaveBeenCalledTimes(2);
 });
+
+const east = (meters: number, north = 0) => ({
+  lat: leg.from.lat + north / 111_195,
+  lon: leg.from.lon + meters / (111_195 * Math.cos((leg.from.lat * Math.PI) / 180)),
+});
+
+function loopRoute(points: Array<[number, number]>, distanceMeters: number): RoutedPath {
+  const geometry = points.map(([x, y]) => east(x, y));
+  return {
+    geometry,
+    distanceMeters,
+    durationSeconds: 120,
+    instructions: [
+      { text: 'Arrive', distanceMeters: 0, durationSeconds: 0, geometryIndex: geometry.length - 1 },
+    ],
+  };
+}
+
+const crossingRoute = loopRoute(
+  [
+    [0, 0],
+    [100, 0],
+    [100, 100],
+    [50, 100],
+    [50, 0],
+  ],
+  350,
+);
+
+function replay(activeRoute: RoutedPath) {
+  const currentLeg = { ...leg, to: activeRoute.geometry.at(-1)! };
+  const timestamp = Date.now();
+  const fix = (x: number, y: number, accuracy = 5) => ({
+    ...east(x, y),
+    accuracy,
+    heading: null,
+    timestamp,
+  });
+  vi.mocked(fetchRoute).mockResolvedValue(activeRoute);
+  const hook = renderHook(
+    ({ position, selectedLeg }: { position: LocationFix | null; selectedLeg: TripLeg }) =>
+      useRoutedNavigation(selectedLeg, position, true),
+    { initialProps: { position: fix(0, 0), selectedLeg: currentLeg } },
+  );
+  return {
+    ...hook,
+    currentLeg,
+    update: (x: number, y: number, accuracy = 5) =>
+      hook.rerender({ position: fix(x, y, accuracy), selectedLeg: currentLeg }),
+    lose: () => hook.rerender({ position: null, selectedLeg: currentLeg }),
+    remaining: () => hook.result.current.progress?.remainingDistanceMeters,
+  };
+}
+
+it('keeps the later traversal when a leg ends at an earlier segment and survives losing fixes', async () => {
+  const run = replay(crossingRoute);
+  await waitFor(() => expect(run.result.current.route).toBe(crossingRoute));
+  run.update(50, 0);
+  expect(run.remaining()).toBeCloseTo(300, 0);
+  run.update(100, 0);
+  run.update(100, 100);
+  run.update(50, 100);
+  run.update(50, 30);
+  expect(run.remaining()).toBeCloseTo(30, 0);
+  run.update(50, 0, 70);
+  run.lose();
+  expect(run.remaining()).toBe(350);
+  run.update(50, 0);
+  expect(run.remaining()).toBeCloseTo(0, 0);
+  expect(fetchRoute).toHaveBeenCalledTimes(1);
+});
+
+it('starts conservatively at a repeated coordinate after a same-endpoint reroute', async () => {
+  const run = replay(crossingRoute);
+  await waitFor(() => expect(run.result.current.route).toBe(crossingRoute));
+  run.update(100, 0);
+  run.update(100, 100);
+  run.update(50, 100);
+  run.update(50, 30);
+  run.update(50, 0);
+  expect(run.remaining()).toBeCloseTo(0, 0);
+  act(() => run.result.current.retry());
+  await waitFor(() => expect(run.remaining()).toBeCloseTo(300, 0));
+  expect(fetchRoute).toHaveBeenCalledTimes(2);
+});
+
+it('requests a different leg even when its mode and endpoints are identical', async () => {
+  const run = replay(crossingRoute);
+  await waitFor(() => expect(run.result.current.route).toBe(crossingRoute));
+  const newRoute = { ...crossingRoute, distanceMeters: 500 };
+  vi.mocked(fetchRoute).mockResolvedValue(newRoute);
+  run.rerender({
+    position: null,
+    selectedLeg: { ...run.currentLeg, title: 'Walk to destination' },
+  });
+  await waitFor(() => expect(run.result.current.route).toBe(newRoute));
+});
+
+it('ignores a superseded response after retrying with the same endpoints', async () => {
+  let finishOld: (route: RoutedPath) => void = () => undefined;
+  vi.mocked(fetchRoute).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishOld = resolve;
+      }),
+  );
+  const newRoute = { ...route, distanceMeters: 220 };
+  vi.mocked(fetchRoute).mockResolvedValue(newRoute);
+  const { result } = renderHook(() => useRoutedNavigation(leg, null, true));
+  act(() => result.current.retry());
+  await waitFor(() => expect(result.current.route).toBe(newRoute));
+  await act(async () => {
+    finishOld(route);
+    await Promise.resolve();
+  });
+  expect(result.current.route).toBe(newRoute);
+});
+
+it('stays on the current traversal with noisy fixes between parallel paths and permits backtracking', async () => {
+  const retraced = loopRoute(
+    [
+      [0, 0],
+      [120, 0],
+      [120, 8],
+      [0, 8],
+    ],
+    248,
+  );
+  const run = replay(retraced);
+  await waitFor(() => expect(run.result.current.route).toBe(retraced));
+  run.update(30, 5, 10);
+  expect(run.remaining()).toBeCloseTo(218, 0);
+  run.update(60, 6, 10);
+  expect(run.remaining()).toBeCloseTo(188, 0);
+  run.update(45, 6, 10);
+  expect(run.remaining()).toBeCloseTo(203, 0);
+  run.update(120, 0);
+  run.update(120, 8);
+  run.update(90, 3, 10);
+  expect(run.remaining()).toBeCloseTo(90, 0);
+  run.update(105, 3, 10);
+  expect(run.remaining()).toBeCloseTo(105, 0);
+  run.update(0, 8);
+  expect(run.remaining()).toBeCloseTo(0, 0);
+});
+
+it('uses observed forward movement to follow an exactly retraced path after the turn', async () => {
+  const retraced = loopRoute(
+    [
+      [0, 0],
+      [120, 0],
+      [0, 0],
+    ],
+    240,
+  );
+  const run = replay(retraced);
+  await waitFor(() => expect(run.result.current.route).toBe(retraced));
+  expect(run.remaining()).toBeCloseTo(240, 0);
+  run.update(60, 0);
+  run.update(120, 0);
+  run.update(80, 0);
+  expect(run.remaining()).toBeCloseTo(80, 0);
+  run.update(0, 0);
+  expect(run.remaining()).toBeCloseTo(0, 0);
+});

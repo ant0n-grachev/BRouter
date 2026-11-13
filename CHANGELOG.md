@@ -7,3 +7,4 @@ All notable changes to BRouter are documented here. The format follows [Keep a C
 ### Fixed
 
 - Share identical concurrent directions requests within one routing process. Canceling a request leaves other riders’ requests active. Only validated routes enter the cache.
+- Keep the correct traversal at crossings and retraced segments. Arrival now also checks distance remaining along the active route.
