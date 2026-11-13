@@ -26,6 +26,14 @@ interface CacheEntry {
   route: RoutedPath;
 }
 
+type RouteResult = { status: 200; body: RoutedPath } | { status: number; body: { error: string } };
+
+interface InFlightRoute {
+  controller: AbortController;
+  result: Promise<RouteResult>;
+  subscribers: number;
+}
+
 class InvalidProviderResponse extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -178,21 +186,49 @@ function cacheKey(request: RoutingRequest): string {
   return `${request.mode}:${point(request.from)}:${point(request.to)}`;
 }
 
-function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  if (milliseconds <= 0) return Promise.resolve();
+function abortError(signal?: AbortSignal): Error {
+  const reason: unknown = signal?.reason;
+  return reason instanceof Error ? reason : new DOMException('Canceled', 'AbortError');
+}
 
+function withAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        const reason: unknown = signal.reason;
-        reject(reason instanceof Error ? reason : new DOMException('Canceled', 'AbortError'));
+    const abort = () => {
+      signal.removeEventListener('abort', abort);
+      reject(abortError(signal));
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    void work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
       },
-      { once: true },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error('Routing failed', { cause: error }));
+      },
     );
   });
+}
+
+function abortableSleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const abort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function routeError(status: number, error: string): RouteResult {
+  return { status, body: { error } };
 }
 
 export function createRouteHandler(options: RouteHandlerOptions = {}) {
@@ -202,90 +238,36 @@ export function createRouteHandler(options: RouteHandlerOptions = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
   const cache = new Map<string, CacheEntry>();
+  const inFlight = new Map<string, InFlightRoute>();
   let outboundQueue = Promise.resolve();
   let lastRequestStartedAt = Number.NEGATIVE_INFINITY;
 
-  function schedule<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  function schedule<T>(task: () => Promise<T>, signal: AbortSignal): Promise<T> {
     const scheduled = outboundQueue.then(async () => {
-      if (signal?.aborted) {
-        const reason: unknown = signal.reason;
-        throw reason instanceof Error ? reason : new DOMException('Canceled', 'AbortError');
-      }
+      signal.throwIfAborted();
       const waitMilliseconds = Math.max(0, lastRequestStartedAt + minIntervalMs - now());
-      if (waitMilliseconds > 0) await sleep(waitMilliseconds, signal);
+      if (waitMilliseconds > 0) await withAbort(sleep(waitMilliseconds, signal), signal);
+      signal.throwIfAborted();
       lastRequestStartedAt = now();
-      return task();
+      return withAbort(task(), signal);
     });
     outboundQueue = scheduled.then(
       () => undefined,
       () => undefined,
     );
-    return scheduled;
+    // A queued caller can time out without moving its work ahead of earlier requests.
+    return withAbort(scheduled, signal);
   }
 
-  return async (request: Request): Promise<Response> => {
-    if (request.method !== 'POST') {
-      return jsonResponse({ error: 'Only POST requests are supported.' }, 405);
-    }
-
-    const apiKey = options.getApiKey?.() ?? options.apiKey;
-    if (!apiKey) {
-      return jsonResponse({ error: 'In-app routing is not configured yet.' }, 503);
-    }
-
-    const controller = new AbortController();
-    const abortFromRequest = () => {
-      const reason: unknown = request.signal.reason;
-      controller.abort(
-        reason instanceof Error ? reason : new DOMException('Canceled', 'AbortError'),
-      );
-    };
-    const canceledResponse = () => jsonResponse({ error: 'Routing request was canceled.' }, 499);
-    const finishEarly = (response: Response) => {
-      request.signal.removeEventListener('abort', abortFromRequest);
-      return response;
-    };
-
-    if (request.signal.aborted) {
-      abortFromRequest();
-      return canceledResponse();
-    }
-    request.signal.addEventListener('abort', abortFromRequest, { once: true });
-
-    let body: unknown;
-    try {
-      const text = await request.text();
-      if (controller.signal.aborted) return finishEarly(canceledResponse());
-      if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
-        return finishEarly(jsonResponse({ error: 'Invalid routing request.' }, 400));
-      }
-      body = JSON.parse(text);
-    } catch {
-      return finishEarly(
-        controller.signal.aborted
-          ? canceledResponse()
-          : jsonResponse({ error: 'Invalid routing request.' }, 400),
-      );
-    }
-
-    if (!isRoutingRequest(body)) {
-      return finishEarly(jsonResponse({ error: 'Invalid routing request.' }, 400));
-    }
-
-    const key = cacheKey(body);
-    const cached = cache.get(key);
-    if (cached && cached.expiresAt > now()) {
-      cache.delete(key);
-      cache.set(key, cached);
-      return finishEarly(jsonResponse(cached.route, 200));
-    }
-    if (cached) cache.delete(key);
-
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort(new DOMException('Timed out', 'TimeoutError'));
-    }, timeoutMs);
+  async function requestRoute(
+    body: RoutingRequest,
+    key: string,
+    apiKey: string,
+    controller: AbortController,
+  ): Promise<RouteResult> {
+    const signal = controller.signal;
+    const timeoutReason = new DOMException('Timed out', 'TimeoutError');
+    const timeout = setTimeout(() => controller.abort(timeoutReason), timeoutMs);
 
     try {
       const profile = body.mode === 'walking' ? 'foot-walking' : 'cycling-regular';
@@ -304,40 +286,105 @@ export function createRouteHandler(options: RouteHandlerOptions = {}) {
               ],
               instructions: true,
             }),
-            signal: controller.signal,
+            signal,
           }),
-        controller.signal,
+        signal,
       );
 
       if (providerResponse.status === 429) {
-        return jsonResponse({ error: 'Routing is busy. Please try again shortly.' }, 429);
+        return routeError(429, 'Routing is busy. Please try again shortly.');
       }
       if (providerResponse.status === 404 || providerResponse.status === 422) {
-        return jsonResponse({ error: 'No route found for those locations.' }, 422);
+        return routeError(422, 'No route found for those locations.');
       }
       if (!providerResponse.ok) {
-        return jsonResponse({ error: 'Routing is temporarily unavailable.' }, 502);
+        return routeError(502, 'Routing is temporarily unavailable.');
       }
 
-      const route = parseProviderRoute(await providerResponse.json());
+      const route = parseProviderRoute(await withAbort(providerResponse.json(), signal));
+      signal.throwIfAborted();
       cache.set(key, { route, expiresAt: now() + CACHE_TTL_MS });
       while (cache.size > MAX_CACHE_ENTRIES) {
         const oldestKey = cache.keys().next().value;
         if (typeof oldestKey !== 'string') break;
         cache.delete(oldestKey);
       }
-      return jsonResponse(route, 200);
+      return { status: 200, body: route };
     } catch {
-      if (timedOut) {
-        return jsonResponse({ error: 'Routing timed out. Please try again.' }, 504);
+      if (signal.reason === timeoutReason) {
+        return routeError(504, 'Routing timed out. Please try again.');
       }
-      if (request.signal.aborted) {
-        return jsonResponse({ error: 'Routing request was canceled.' }, 499);
-      }
-      return jsonResponse({ error: 'Routing is temporarily unavailable.' }, 502);
+      return routeError(502, 'Routing is temporarily unavailable.');
     } finally {
       clearTimeout(timeout);
-      request.signal.removeEventListener('abort', abortFromRequest);
+    }
+  }
+
+  return async (request: Request): Promise<Response> => {
+    if (request.method !== 'POST') {
+      return jsonResponse({ error: 'Only POST requests are supported.' }, 405);
+    }
+
+    const apiKey = options.getApiKey?.() ?? options.apiKey;
+    if (!apiKey) {
+      return jsonResponse({ error: 'In-app routing is not configured yet.' }, 503);
+    }
+
+    const signal = request.signal;
+    const canceledResponse = () => jsonResponse({ error: 'Routing request was canceled.' }, 499);
+    if (signal.aborted) return canceledResponse();
+
+    let body: unknown;
+    try {
+      const text = await withAbort(request.text(), signal);
+      if (signal.aborted) return canceledResponse();
+      if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
+        return jsonResponse({ error: 'Invalid routing request.' }, 400);
+      }
+      body = JSON.parse(text);
+    } catch {
+      return signal.aborted
+        ? canceledResponse()
+        : jsonResponse({ error: 'Invalid routing request.' }, 400);
+    }
+
+    if (!isRoutingRequest(body)) {
+      return jsonResponse({ error: 'Invalid routing request.' }, 400);
+    }
+
+    const key = cacheKey(body);
+    const cached = cache.get(key);
+    if (cached && cached.expiresAt > now()) {
+      cache.delete(key);
+      cache.set(key, cached);
+      return jsonResponse(cached.route, 200);
+    }
+    if (cached) cache.delete(key);
+
+    let pending = inFlight.get(key);
+    if (!pending) {
+      const controller = new AbortController();
+      const result = requestRoute(body, key, apiKey, controller).finally(() => {
+        if (inFlight.get(key)?.controller === controller) inFlight.delete(key);
+      });
+      pending = { controller, result, subscribers: 0 };
+      inFlight.set(key, pending);
+    }
+
+    pending.subscribers += 1;
+    try {
+      const result = await withAbort(pending.result, signal);
+      return signal.aborted ? canceledResponse() : jsonResponse(result.body, result.status);
+    } catch {
+      if (signal.aborted) return canceledResponse();
+      return jsonResponse({ error: 'Routing is temporarily unavailable.' }, 502);
+    } finally {
+      pending.subscribers -= 1;
+      if (pending.subscribers === 0 && inFlight.get(key) === pending) {
+        // An immediate retry can start fresh while abandoned work unwinds.
+        inFlight.delete(key);
+        pending.controller.abort(new DOMException('Canceled', 'AbortError'));
+      }
     }
   };
 }
