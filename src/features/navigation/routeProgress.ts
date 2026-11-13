@@ -6,6 +6,7 @@ const INSTRUCTION_REACHED_TOLERANCE_METERS = 1;
 const MAX_AMBIGUITY_METERS = 15;
 const MIN_AMBIGUITY_METERS = 2;
 const SCORE_TIE_METERS = 0.5;
+const PROJECTION_EPSILON_METERS = 0.000_001;
 
 export interface RouteProgress {
   distanceFromRouteMeters: number;
@@ -26,6 +27,7 @@ export interface MatchedRoutePosition {
   position: LatLon;
   distanceAlongRouteMeters: number;
   remainingGeometryMeters: number;
+  geometryIndex: number;
 }
 
 function toLocalMeters(point: LatLon, origin: LatLon, referenceLatitude: number) {
@@ -116,8 +118,10 @@ function projectOntoRoute(
     if (distance > closestDistance + tolerance) continue;
     // A local minimum represents a traversal, rather than a nearby segment endpoint.
     if (
-      distance > (projections[index - 1]?.distanceFromRouteMeters ?? Infinity) ||
-      distance > (projections[index + 1]?.distanceFromRouteMeters ?? Infinity)
+      distance >
+        (projections[index - 1]?.distanceFromRouteMeters ?? Infinity) + PROJECTION_EPSILON_METERS ||
+      distance >
+        (projections[index + 1]?.distanceFromRouteMeters ?? Infinity) + PROJECTION_EPSILON_METERS
     )
       continue;
 
@@ -128,16 +132,20 @@ function projectOntoRoute(
       best = projection;
       bestScore = score;
     } else if (best && Math.abs(score - bestScore) <= SCORE_TIE_METERS) {
-      // At an exact retrace, equally plausible motion continues into the next traversal.
-      // If two points share one vertex, keep the original segment index there.
-      if (
-        movement > tolerance &&
+      const continuesAtTurn =
+        movement > SCORE_TIE_METERS &&
         delta > 0 &&
-        best.distanceAlongRouteMeters < previous.distanceAlongRouteMeters
-      ) {
-        best = projection;
-        bestScore = score;
-      } else if (distance < best.distanceFromRouteMeters - SCORE_TIE_METERS) {
+        best.distanceAlongRouteMeters < previous.distanceAlongRouteMeters &&
+        index > previous.geometryIndex &&
+        Math.abs(distances[index] - previous.distanceAlongRouteMeters) <= SCORE_TIE_METERS;
+      const closerToFix = distance < best.distanceFromRouteMeters - SCORE_TIE_METERS;
+      const staysOnTraversal =
+        Math.abs(distance - best.distanceFromRouteMeters) <= SCORE_TIE_METERS &&
+        index === previous.geometryIndex &&
+        best.geometryIndex !== previous.geometryIndex;
+      // When retraced geometry is indistinguishable, stay on the current traversal
+      // until a fix reaches the shared turn and movement resumes along the next one.
+      if (continuesAtTurn || closerToFix || staysOnTraversal) {
         best = projection;
         bestScore = score;
       }
@@ -200,6 +208,7 @@ export function matchRouteProgress(
           position,
           distanceAlongRouteMeters: projection.distanceAlongRouteMeters,
           remainingGeometryMeters: geometryDistance - projection.distanceAlongRouteMeters,
+          geometryIndex: projection.geometryIndex,
         }
       : null,
   };

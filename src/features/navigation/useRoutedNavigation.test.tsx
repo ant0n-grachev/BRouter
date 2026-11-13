@@ -271,3 +271,36 @@ it('uses observed forward movement to follow an exactly retraced path after the 
   run.update(0, 0);
   expect(run.remaining()).toBeCloseTo(0, 0);
 });
+
+it('follows both traversals of an exact retrace with five-meter fixes and ten-meter accuracy', async () => {
+  const activeRoute: RoutedPath = {
+    ...crossingRoute,
+    geometry: [
+      { lat: 0, lon: 0 },
+      { lat: 100 / 111194.92664455874, lon: 0 },
+      { lat: 0, lon: 0 },
+    ],
+    distanceMeters: 200,
+  };
+  vi.mocked(fetchRoute).mockResolvedValue(activeRoute);
+  const currentLeg = { ...leg, from: activeRoute.geometry[0], to: activeRoute.geometry[2] };
+  const position = (meters: number) => ({
+    lat: meters / 111194.92664455874,
+    lon: 0,
+    accuracy: 10,
+    heading: null,
+    timestamp: Date.now(),
+  });
+  const { rerender, result } = renderHook(({ fix }) => useRoutedNavigation(currentLeg, fix, true), {
+    initialProps: { fix: position(0) },
+  });
+  await waitFor(() => expect(result.current.route).toBe(activeRoute));
+  for (let meters = 5; meters <= 100; meters += 5) {
+    rerender({ fix: position(meters) });
+    expect(result.current.progress?.remainingDistanceMeters).toBeCloseTo(200 - meters, 0);
+  }
+  for (let meters = 95; meters >= 0; meters -= 5) {
+    rerender({ fix: position(meters) });
+    expect(result.current.progress?.remainingDistanceMeters).toBeCloseTo(meters, 0);
+  }
+});
