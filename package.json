@@ -1,6 +1,6 @@
 {
   "name": "brouter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "homepage": "https://bcycle-router.netlify.app",
@@ -50,6 +50,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "check:version": "node scripts/check-version.mjs"
   }
 }

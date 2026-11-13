@@ -251,3 +251,156 @@ describe('createRouteHandler', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+function deferred() {
+  let resolve = () => {};
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
+
+const DIFFERENT_BODY = { ...VALID_BODY, mode: 'walking' };
+
+it('shares an in-flight normalized key and returns separately readable no-store responses', async () => {
+  const gate = deferred();
+  const fetchMock = vi.fn(async () => {
+    await gate.promise;
+    return orsResponse();
+  });
+  const handler = createRouteHandler({ apiKey: 'fixture', fetch: fetchMock, minIntervalMs: 0 });
+  const first = handler(incoming());
+  const second = handler(incoming({ ...VALID_BODY, from: { ...VALID_BODY.from, lat: 43.073101 } }));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  gate.resolve();
+
+  const responses = await Promise.all([first, second]);
+  expect(responses[0]).not.toBe(responses[1]);
+  for (const response of responses) {
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    await expect(response.json()).resolves.toMatchObject({ distanceMeters: 1_500 });
+  }
+  expect((await handler(incoming())).status).toBe(200);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('returns promptly to a canceled subscriber while the same upstream request succeeds for another', async () => {
+  const gate = deferred();
+  const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    await gate.promise;
+    init?.signal?.throwIfAborted();
+    return orsResponse();
+  });
+  const handler = createRouteHandler({ apiKey: 'fixture', fetch: fetchMock, minIntervalMs: 0 });
+  const controller = new AbortController();
+  const first = handler(incoming(VALID_BODY, 'POST', controller.signal));
+  const second = handler(incoming());
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  controller.abort();
+  try {
+    await expect(first).resolves.toMatchObject({ status: 499 });
+  } finally {
+    gate.resolve();
+  }
+  await expect(second).resolves.toMatchObject({ status: 200 });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('cancels shared queued work when its final subscriber leaves and retains spacing for distinct work', async () => {
+  const gate = deferred();
+  let now = 100;
+  const fetchMock = vi.fn(async () => {
+    await gate.promise;
+    return orsResponse();
+  });
+  const sleep = vi.fn((milliseconds: number) => {
+    now += milliseconds;
+    return Promise.resolve();
+  });
+  const handler = createRouteHandler({
+    apiKey: 'fixture',
+    fetch: fetchMock,
+    now: () => now,
+    sleep,
+  });
+  const active = handler(incoming());
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const first = handler(incoming(DIFFERENT_BODY, 'POST', firstController.signal));
+  const second = handler(incoming(DIFFERENT_BODY, 'POST', secondController.signal));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  firstController.abort();
+  secondController.abort();
+  try {
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ status: 499 }),
+      expect.objectContaining({ status: 499 }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  } finally {
+    gate.resolve();
+  }
+  await expect(active).resolves.toMatchObject({ status: 200 });
+  await expect(handler(incoming(DIFFERENT_BODY))).resolves.toMatchObject({ status: 200 });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(sleep).toHaveBeenCalledExactlyOnceWith(1_500, expect.any(AbortSignal));
+});
+
+it('aborts abandoned upstream work and lets an immediate retry succeed', async () => {
+  const abandoned = deferred();
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockImplementationOnce(async () => {
+      await abandoned.promise;
+      return orsResponse();
+    })
+    .mockImplementation(() => Promise.resolve(orsResponse()));
+  const handler = createRouteHandler({ apiKey: 'fixture', fetch: fetchMock, minIntervalMs: 0 });
+  const controller = new AbortController();
+  const pending = handler(incoming(VALID_BODY, 'POST', controller.signal));
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+  controller.abort();
+  try {
+    await expect(pending).resolves.toMatchObject({ status: 499 });
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    await expect(handler(incoming())).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  } finally {
+    abandoned.resolve();
+  }
+});
+
+it('returns shared timeouts when the upstream does not settle and lets the queue recover', async () => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockImplementationOnce(() => new Promise<Response>(() => {}))
+    .mockImplementation(() => Promise.resolve(orsResponse()));
+  const handler = createRouteHandler({
+    apiKey: 'fixture',
+    fetch: fetchMock,
+    minIntervalMs: 0,
+    timeoutMs: 50,
+  });
+
+  const timedOut = await Promise.all([handler(incoming()), handler(incoming())]);
+  expect(timedOut.map((response) => response.status)).toEqual([504, 504]);
+  expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  await expect(handler(incoming())).resolves.toMatchObject({ status: 200 });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  ['provider error', () => new Response('private provider text', { status: 500 })],
+  ['malformed response', () => orsResponse({ features: [] })],
+])('does not cache a shared %s or poison the next request', async (_name, upstream) => {
+  const fetchMock = vi
+    .fn<typeof fetch>()
+    .mockImplementationOnce(() => Promise.resolve(upstream()))
+    .mockImplementation(() => Promise.resolve(orsResponse()));
+  const handler = createRouteHandler({ apiKey: 'fixture', fetch: fetchMock, minIntervalMs: 0 });
+  const failed = await Promise.all([handler(incoming()), handler(incoming())]);
+  expect(failed.map((response) => response.status)).toEqual([502, 502]);
+  await expect(handler(incoming())).resolves.toMatchObject({ status: 200 });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});

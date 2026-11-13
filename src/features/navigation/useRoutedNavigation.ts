@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import type { TripLeg } from '../../lib/tripPlanner';
 import { haversineKm } from '../../lib/distance';
 import type { LatLon } from '../../types';
 import { isUsableFix, type LocationFix } from './navigationLocation';
-import { getRouteProgress } from './routeProgress';
+import {
+  getRouteProgress,
+  matchRouteProgress,
+  type MatchedRoutePosition,
+  type RouteProgress,
+} from './routeProgress';
 import { fetchRoute } from './routingClient';
 import type { RoutedPath } from './routingTypes';
 
@@ -13,6 +26,15 @@ interface RouteState {
   loading: boolean;
   error: string | null;
 }
+interface ProgressHistory {
+  route: RoutedPath;
+  key: string;
+  fix: LocationFix;
+  match: MatchedRoutePosition | null;
+  remainingGeometryMeters: number | null;
+  progress: RouteProgress;
+}
+
 type RouteAction =
   | { type: 'request'; key: string }
   | { type: 'success'; key: string; route: RoutedPath }
@@ -38,6 +60,7 @@ export function useRoutedNavigation(
   position: LocationFix | null,
   online: boolean,
   enabled = true,
+  legIdentity = '',
 ) {
   const [state, dispatch] = useReducer(routeReducer, {
     key: '',
@@ -46,6 +69,7 @@ export function useRoutedNavigation(
     error: null,
   });
   const [revision, requestAgain] = useReducer((value: number) => value + 1, 0);
+  const [history, setHistory] = useState<ProgressHistory | null>(null);
   const latestPosition = useRef(position);
   const lastRequestAt = useRef(0);
   const requestedFromFix = useRef(false);
@@ -53,7 +77,7 @@ export function useRoutedNavigation(
   useLayoutEffect(() => {
     latestPosition.current = position;
   }, [position]);
-  const key = `${leg.mode}:${leg.from.lat},${leg.from.lon}:${leg.to.lat},${leg.to.lon}`;
+  const key = `${legIdentity}:${leg.title}:${leg.mode}:${leg.from.lat},${leg.from.lon}:${leg.to.lat},${leg.to.lon}:${revision}`;
   const fromLat = leg.from.lat;
   const fromLon = leg.from.lon;
   const toLat = leg.to.lat;
@@ -89,9 +113,9 @@ export function useRoutedNavigation(
       },
     );
     return () => controller.abort();
-  }, [key, fromLat, fromLon, toLat, toLon, mode, online, enabled, revision]);
+  }, [key, fromLat, fromLon, toLat, toLon, mode, online, enabled]);
 
-  const route = state.key === key ? state.route : null;
+  const route = enabled && state.key === key ? state.route : null;
   const usablePosition = isUsableFix(position) ? position : null;
   useEffect(() => {
     if (
@@ -105,10 +129,36 @@ export function useRoutedNavigation(
     requestedFromFix.current = true;
     if (haversineKm(usablePosition, requestAnchor.current) * 1000 > 30) requestAgain();
   }, [enabled, online, usablePosition, key]);
-  const progress = useMemo(
-    () => (route ? getRouteProgress(route, usablePosition) : null),
-    [route, usablePosition],
-  );
+  const initialProgress = useMemo(() => (route ? getRouteProgress(route, null) : null), [route]);
+  const currentHistory = history?.route === route && history.key === key ? history : null;
+  let progress = initialProgress;
+  let remainingGeometryMeters: number | null = null;
+  if (route && usablePosition) {
+    if (currentHistory?.fix === usablePosition) {
+      progress = currentHistory.progress;
+      remainingGeometryMeters = currentHistory.remainingGeometryMeters;
+    } else {
+      const match = matchRouteProgress(
+        route,
+        usablePosition,
+        currentHistory?.match,
+        usablePosition.accuracy,
+      );
+      const isOnRoute = match.progress.distanceFromRouteMeters <= 80 + usablePosition.accuracy;
+      remainingGeometryMeters = isOnRoute ? (match.match?.remainingGeometryMeters ?? null) : null;
+      setHistory({
+        route,
+        key,
+        fix: usablePosition,
+        progress: match.progress,
+        match: isOnRoute ? match.match : (currentHistory?.match ?? null),
+        remainingGeometryMeters,
+      });
+      progress = match.progress;
+    }
+  } else if (history && !currentHistory) {
+    setHistory(null);
+  }
   const loading = enabled && online && (state.key !== key || state.loading);
   useEffect(() => {
     if (!enabled || !online || loading || state.error || !usablePosition || !progress) return;
@@ -122,6 +172,7 @@ export function useRoutedNavigation(
   return {
     route,
     progress,
+    remainingGeometryMeters,
     loading,
     error: !online
       ? 'You’re offline. Route updates will resume when you reconnect.'

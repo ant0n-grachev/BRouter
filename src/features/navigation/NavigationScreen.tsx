@@ -123,7 +123,13 @@ export default function NavigationScreen({
   }, [dataFresh, dismissedChange, changeKey]);
   const replaceAutomatically =
     journey.rerouteMode === 'automatic' && change?.replacement !== null && change !== null;
-  const routed = useRoutedNavigation(leg, fix, online, active && !replaceAutomatically);
+  const routed = useRoutedNavigation(
+    leg,
+    fix,
+    online,
+    active && !replaceAutomatically,
+    `${journey.id}:${journey.stage}:${selectedStation?.station_id ?? ''}`,
+  );
 
   useEffect(() => {
     if (!replaceAutomatically || !change?.replacement) return;
@@ -136,7 +142,13 @@ export default function NavigationScreen({
   }, [replaceAutomatically, change, snapshot, fix, updateJourney]);
 
   const nearTarget = locationEnabled && isNearTarget(location.fix, leg.to, now);
-  const atTarget = Boolean(fix && haversineKm(fix, leg.to) * 1000 + fix.accuracy <= 20);
+  const progress = routed.progress;
+  const atTarget = Boolean(
+    fix &&
+    routed.remainingGeometryMeters !== null &&
+    routed.remainingGeometryMeters <= 20 &&
+    haversineKm(fix, leg.to) * 1000 + fix.accuracy <= 20,
+  );
   const unresolvedStation = Boolean(
     change &&
     dismissedChange !== changeKey &&
@@ -169,7 +181,6 @@ export default function NavigationScreen({
     setDismissedChange(null);
   }
 
-  const progress = routed.progress;
   const arrivalTime = progress
     ? new Date(now + progress.remainingDurationSeconds * 1000).toLocaleTimeString([], {
         hour: 'numeric',
