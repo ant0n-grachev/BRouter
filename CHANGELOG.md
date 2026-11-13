@@ -4,6 +4,12 @@ All notable changes to BRouter are documented here. The format follows [Keep a C
 
 ## Unreleased
 
+### Added
+
+- Show the trip planner and in-app directions in the README with screenshots captured from BRouter.
+
+## [0.1.1]
+
 ### Fixed
 
 - Share identical concurrent directions requests within one routing process. Canceling a request leaves other riders’ requests active. Only validated routes enter the cache.
@@ -12,5 +18,6 @@ All notable changes to BRouter are documented here. The format follows [Keep a C
 ### Changed
 
 - Prepare v0.1.1 for the navigation fixes and check version consistency in CI.
-
 - Document the in-app bike-share journey, server-side routing setup, and physical-device verification limits in the README and operating guide.
+
+[0.1.1]: https://github.com/ant0n-grachev/BRouter/commit/bcfdbd4cfd0568aaa11cf90b3ee83cdc371ef96c

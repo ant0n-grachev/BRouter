@@ -46,18 +46,18 @@ fix is recent (at most 30 seconds old), accurate to 50 meters or better, and the
 distance plus reported accuracy is within 100 meters. It uses the general
 `bcycle://` launch URI advertised by Madison's GBFS system metadata. This is the
 only navigation action that leaves BRouter, and it does not send an unlock,
-purchase, or return command. Returning to BRouter does not change the active leg;
-the rider chooses the next or previous leg with the stage controls at the bottom
+purchase, or return command. Returning to BRouter does not change the active leg.
+The rider chooses the next or previous leg with the stage controls at the bottom
 of the navigation screen.
 
 The app cannot determine whether BCycle actually unlocked or accepted a bike.
-The launch URI needs verification on a physical phone with BCycle installed;
-automated tests can only simulate that boundary. Fullscreen means the
+The launch URI needs verification on a physical phone with BCycle installed.
+Automated tests can only simulate that boundary. Fullscreen means the
 available app viewport, not guaranteed removal of operating-system browser chrome.
 An entered starting address opens a route-only view, even if the browser already
 allows location access. It shows the selected leg, route, distance, and duration,
 with no GPS or compass access, location marker, follow control, turn prompts, or
-arrival clock. This choice persists after reload; older saved trips default to
+arrival clock. This choice persists after reload. Older saved trips default to
 the route-only view.
 
 Pressing **Use my location**, the location icon beside **Starting location**, enables
@@ -68,10 +68,9 @@ require an accurate fix. The location button can request access again when neede
 
 In live navigation, press the location button to zoom in and follow movement.
 The map turns so the direction the phone faces points upward, with the location
-arrow and cone aligned to it. The phone's compass supplies the heading when available;
-the button requests device-orientation permission on browsers that require it.
-GPS travel direction is the fallback; no reliable heading displays a location dot
-and a north-up map. Dragging pauses following and rotation; press the location
+arrow and cone aligned to it. The phone's compass supplies the heading when available.
+The button requests device-orientation permission on browsers that require it.
+GPS travel direction is the fallback. Without a reliable heading, the map stays north-up and shows a location dot. Dragging pauses following and rotation. Press the location
 button to resume. **Show route** restores the north-up overview. GPS and compass
 tracking work while the app is visible. Screen wake lock is requested where
 supported and released when navigation ends or hides.
@@ -81,8 +80,8 @@ hidden, and refreshes on return. Existing counts stay visible during background
 refreshes, without freshness labels or refresh warnings. **Navigation options → If a station becomes
 unavailable** offers **Ask me first** (default) and **Change route automatically**.
 Only fresh, successful station data can trigger a station replacement. The
-pickup walk checks pickup and planned return availability; riding checks only
-the return station; the final walk does not change stations. Selecting a previous
+pickup walk checks pickup and planned return availability. Riding checks only
+the return station. The final walk does not change stations. Selecting a previous
 leg resumes the checks for that leg. Alternatives remain within the planner's one-mile endpoint radius. If
 none exists, the app explains the problem and retains the selected destination.
 
@@ -90,7 +89,7 @@ Active journey state is stored locally under `brouter:journey:v1`, validated on
 reload, and expires after twelve hours without a journey-state update. GPS samples
 are not persisted. Ending navigation clears the saved journey. The rerouting
 preference is saved separately under `brouter:reroute-mode:v1`. Offline route
-updates and fresh availability require connectivity; no fake straight-line
+updates and fresh availability require connectivity. No fake straight-line
 navigation route is substituted when a directions request fails.
 
 ### Routing setup
@@ -109,7 +108,7 @@ navigation route is substituted when a directions request fails.
    or commit it. Netlify serves the endpoint at `/.netlify/functions/route`.
 
 Without the key, navigation reports that routing is not configured and offers a
-retry; station and journey features still work. The free service has usage
+retry. Station and journey features still work. The free service has usage
 limits ([current plans](https://openrouteservice.org/plans/)). Requests are cached
 and throttled, and provider errors or exhausted limits are shown in the app.
 The cache and request queue are local to each routing process.
@@ -119,13 +118,13 @@ The cache and request queue are local to each routing process.
 BRouter first checks the Madison BCycle GBFS discovery document and falls back
 to documented station-information and station-status endpoints when discovery
 cannot resolve both feeds. The feeds are fetched in parallel with an eight-second
-request timeout. External JSON is validated at runtime; malformed individual
+request timeout. External JSON is validated at runtime. Malformed individual
 stations can be skipped safely, negative availability values are clamped to
 zero, and an unusable overall feed fails clearly.
 
 A successful load produces a snapshot containing the stations, local fetch
 time, provider update time and TTL when present, and a stale flag. Freshness is
-derived from provider metadata; a documented 15-second fallback threshold is
+derived from provider metadata. A documented 15-second fallback threshold is
 used when usable metadata is absent.
 
 Normal loads use a short 15-second in-memory cache and deduplicate concurrent
@@ -169,8 +168,8 @@ is shown in the map controls whenever the optional map is open.
 ## Accessibility
 
 - Address search uses semantic forms and a WAI-ARIA combobox/listbox pattern.
-- Arrow keys move through results, Enter selects, and Escape closes the list;
-  pointer selection remains available.
+- Arrow keys move through results, Enter selects, and Escape closes the list.
+  Pointer selection remains available.
 - Search progress and relevant station changes use polite live announcements,
   while actionable errors are identified separately. Routine successful station
   refreshes remain silent.
@@ -194,7 +193,7 @@ The checked-in `netlify.toml` is the deployment contract:
 Netlify reads those settings automatically and builds the routing function in
 `netlify/functions/route.ts`. Before deploying, configure the server-only
 `OPENROUTESERVICE_API_KEY` environment variable for Functions as described in
-[Routing setup](#routing-setup) above. The planner works without a key; in-app directions
+[Routing setup](#routing-setup) above. The planner works without a key. In-app directions
 require it.
 
 `vite-plugin-pwa` generates the Workbox service worker during the production

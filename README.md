@@ -10,6 +10,18 @@ BRouter helps riders choose both ends of a bike-share trip. Enter a starting poi
 
 [Open BRouter](https://bcycle-router.netlify.app/) · [Watch the planner walkthrough](https://github.com/user-attachments/assets/e3689c4c-f612-4196-b2c7-ded43c66002c)
 
+## Screenshots
+
+**Trip planner** · Compare pickup bikes and return docks before choosing stations.
+
+<a href="docs/screenshots/trip-planner.png"><img src="docs/screenshots/trip-planner.png" width="480" alt="BRouter trip planner showing available bikes and docks for pickup and drop-off stations"></a>
+
+**Navigation** · See the active leg, next direction, and remaining travel time on the map.
+
+<a href="docs/screenshots/navigation.webp"><img src="docs/screenshots/navigation.webp" width="480" alt="BRouter navigation showing walking directions to a bike-share station on a map of Madison"></a>
+
+Screenshots use sample trip data.
+
 ## Features
 
 - Compare up to three pickup and three return stations using live Madison BCycle availability.
@@ -84,6 +96,6 @@ See [How BRouter works](docs/OPERATING.md) for station ranking, route behavior, 
 
 ## Versioning and credits
 
-The prepared application version is **v0.1.1** (unreleased). BRouter uses [Semantic Versioning](https://semver.org/). [`package.json`](package.json) is the version source, and Git tags for published versions use `vX.Y.Z`. See the [changelog](CHANGELOG.md) for unreleased changes.
+The prepared application version is **v0.1.2** (unreleased). BRouter uses [Semantic Versioning](https://semver.org/). [`package.json`](package.json) is the version source, and Git tags for published versions use `vX.Y.Z`. See the [changelog](CHANGELOG.md) for unreleased changes.
 
 BRouter is an independent project by Anton Grachev under the [MIT License](LICENSE). See the [data providers and attribution](docs/OPERATING.md#data-sources-and-independence). Report issues or propose changes in the [canonical repository](https://github.com/ant0n-grachev/BRouter).
