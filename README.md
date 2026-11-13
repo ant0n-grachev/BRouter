@@ -52,6 +52,7 @@ Address queries go directly to Photon. Coordinates needed for directions go thro
 [![CI](https://github.com/ant0n-grachev/BRouter/actions/workflows/ci.yml/badge.svg)](https://github.com/ant0n-grachev/BRouter/actions/workflows/ci.yml)
 
 ```bash
+npm run check:version
 npm run typecheck
 npm run lint
 npm run format:check
@@ -83,6 +84,6 @@ See [How BRouter works](docs/OPERATING.md) for station ranking, route behavior, 
 
 ## Versioning and credits
 
-The application uses [Semantic Versioning](https://semver.org/). [`package.json`](package.json) is the version source, and Git tags for published versions use `vX.Y.Z`. See the [changelog](CHANGELOG.md) for unreleased changes.
+The prepared application version is **v0.1.1** (unreleased). BRouter uses [Semantic Versioning](https://semver.org/). [`package.json`](package.json) is the version source, and Git tags for published versions use `vX.Y.Z`. See the [changelog](CHANGELOG.md) for unreleased changes.
 
 BRouter is an independent project by Anton Grachev under the [MIT License](LICENSE). See the [data providers and attribution](docs/OPERATING.md#data-sources-and-independence). Report issues or propose changes in the [canonical repository](https://github.com/ant0n-grachev/BRouter).
